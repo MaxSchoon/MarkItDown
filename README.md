@@ -9,6 +9,7 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
 - Preserve file organization within ZIP archives in the output Markdown
 - Add date to output filenames for easy versioning
 - Simple, directory-based workflow
+- Customizable input and output directory paths via command-line arguments
 
 ## Prerequisites
 
@@ -29,12 +30,43 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
 
 ## Usage
 
+### Basic Usage
+
 1. Place the files you want to convert in the `input` directory
 2. Run the script:
    ```bash
    python MarkItDown.py
    ```
 3. Find the converted Markdown files in the `output` directory
+
+### Command-Line Options
+
+You can customize the input and output directories using command-line flags:
+
+```bash
+python MarkItDown.py -i /path/to/input/folder -o /path/to/output/folder
+```
+
+Available options:
+
+| Flag | Long Form | Description |
+|------|-----------|-------------|
+| `-i` | `--input` | Specify custom input directory (default: `input`) |
+| `-o` | `--output` | Specify custom output directory (default: `output`) |
+| `-v` | `--verbose` | Enable verbose output for detailed processing information |
+
+Examples:
+
+```bash
+# Use custom folders
+python MarkItDown.py --input documents --output markdown
+
+# Use absolute paths
+python MarkItDown.py -i /Users/username/Documents -o /Users/username/Markdown
+
+# Enable verbose mode
+python MarkItDown.py -v
+```
 
 ### Supported File Types
 
@@ -70,6 +102,7 @@ If you encounter errors:
 2. Check that the input and output directories exist
 3. Verify that you have appropriate permissions to read from input and write to output
 4. For ZIP files, ensure they're not corrupted and contain supported file types
+5. Use the `-v` flag to enable verbose mode for detailed logging
 
 ## License
 
