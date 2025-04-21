@@ -99,6 +99,118 @@ def process_zip_file(zip_file_path, output_file_path, verbose=False):
         # Clean up temp directory
         shutil.rmtree(temp_dir)
 
+def combine_files_to_markdown(folder_path, output_file_path, verbose=False):
+    """Convert all files in a folder to a single markdown file"""
+    try:
+        # Process each file in the folder
+        all_markdown_content = []
+        folder_name = os.path.basename(folder_path)
+        
+        files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f)) and not f.startswith('.')]
+        
+        if not files:
+            if verbose:
+                print(f"No files found in {folder_path}")
+            return False
+        
+        for filename in files:
+            file_path = os.path.join(folder_path, filename)
+            
+            if verbose:
+                print(f"Processing {filename} in folder {folder_name}")
+            
+            try:
+                # Convert file to markdown
+                result = subprocess.run(['markitdown', file_path], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=True)
+                content = result.stdout
+                
+                # Add file header and content
+                all_markdown_content.append(f"# {filename}\n\n{content}\n\n")
+            except subprocess.CalledProcessError as e:
+                all_markdown_content.append(f"# {filename}\n\nError converting file: {e.stderr}\n\n")
+            except Exception as e:
+                all_markdown_content.append(f"# {filename}\n\nError converting file: {str(e)}\n\n")
+        
+        # Combine all content and write to output file
+        with open(output_file_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Contents of folder: {folder_name}\n\n")
+            f.write("".join(all_markdown_content))
+        
+        if verbose:
+            print(f"Successfully combined folder {folder_path} to {output_file_path}")
+        return True
+    except Exception as e:
+        print(f"Error processing folder {folder_path}: {str(e)}")
+        return False
+
+def has_subfolders(folder_path):
+    """Check if a folder contains any subfolders"""
+    for item in os.listdir(folder_path):
+        item_path = os.path.join(folder_path, item)
+        if os.path.isdir(item_path) and not item.startswith('.'):
+            return True
+    return False
+
+def process_directory(input_dir, output_dir, base_input_dir, base_output_dir, current_date, verbose=False):
+    """Recursively process a directory"""
+    # Check if directory has subfolders
+    has_children = has_subfolders(input_dir)
+    
+    if has_children:
+        # Process each subfolder recursively
+        for item in os.listdir(input_dir):
+            item_path = os.path.join(input_dir, item)
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                # Create relative output path
+                rel_path = os.path.relpath(item_path, base_input_dir)
+                output_subdir = os.path.join(base_output_dir, rel_path)
+                os.makedirs(output_subdir, exist_ok=True)
+                
+                # Process this subfolder
+                process_directory(item_path, output_subdir, base_input_dir, base_output_dir, current_date, verbose)
+                
+        # Also process individual files in this directory
+        for filename in os.listdir(input_dir):
+            input_file_path = os.path.join(input_dir, filename)
+            
+            # Skip directories and hidden files
+            if os.path.isdir(input_file_path) or filename.startswith('.'):
+                continue
+            
+            # Create output filename with date
+            name_without_ext, ext = os.path.splitext(filename)
+            output_filename = f"{name_without_ext}_{current_date}.md"
+            
+            # Determine relative path for output
+            rel_dir = os.path.relpath(input_dir, base_input_dir)
+            output_subdir = os.path.join(base_output_dir, rel_dir)
+            os.makedirs(output_subdir, exist_ok=True)
+            
+            output_file_path = os.path.join(output_subdir, output_filename)
+            
+            if verbose:
+                print(f"Processing individual file {filename} -> {output_filename}")
+            
+            # Process the file based on extension
+            if ext.lower() == '.zip':
+                process_zip_file(input_file_path, output_file_path, verbose)
+            else:
+                convert_file_to_markdown(input_file_path, output_file_path, verbose)
+                
+    else:
+        # This is a leaf directory, combine all files into one markdown file
+        folder_name = os.path.basename(input_dir)
+        output_filename = f"{folder_name}_{current_date}.md"
+        output_file_path = os.path.join(output_dir, output_filename)
+        
+        if verbose:
+            print(f"Processing leaf folder {folder_name} -> {output_filename}")
+        
+        combine_files_to_markdown(input_dir, output_file_path, verbose)
+
 def process_all_files(input_dir, output_dir, verbose=False):
     """Process all files in the input directory"""
     # Get the current script's directory
@@ -130,29 +242,37 @@ def process_all_files(input_dir, output_dir, verbose=False):
         print(f"Warning: Input directory '{input_dir}' is empty.")
         return False
     
-    # Process each file in the input directory
-    for filename in os.listdir(input_dir):
-        input_file_path = os.path.join(input_dir, filename)
+    # Process root level items
+    for item in os.listdir(input_dir):
+        item_path = os.path.join(input_dir, item)
         
-        # Skip directories and hidden files
-        if os.path.isdir(input_file_path) or filename.startswith('.'):
+        # Skip hidden files/directories
+        if item.startswith('.'):
             if verbose:
-                print(f"Skipping directory or hidden file: {filename}")
+                print(f"Skipping hidden item: {item}")
             continue
         
-        # Create output filename with date
-        name_without_ext, ext = os.path.splitext(filename)
-        output_filename = f"{name_without_ext}_{current_date}.md"
-        output_file_path = os.path.join(output_dir, output_filename)
-        
-        if verbose:
-            print(f"Processing {filename} -> {output_filename}")
-        
-        # Process the file based on extension
-        if ext.lower() == '.zip':
-            process_zip_file(input_file_path, output_file_path, verbose)
+        if os.path.isdir(item_path):
+            # Create corresponding output directory
+            output_subdir = os.path.join(output_dir, item)
+            os.makedirs(output_subdir, exist_ok=True)
+            
+            # Process this directory
+            process_directory(item_path, output_subdir, input_dir, output_dir, current_date, verbose)
         else:
-            convert_file_to_markdown(input_file_path, output_file_path, verbose)
+            # Process single file
+            name_without_ext, ext = os.path.splitext(item)
+            output_filename = f"{name_without_ext}_{current_date}.md"
+            output_file_path = os.path.join(output_dir, output_filename)
+            
+            if verbose:
+                print(f"Processing root file {item} -> {output_filename}")
+            
+            # Process the file based on extension
+            if ext.lower() == '.zip':
+                process_zip_file(item_path, output_file_path, verbose)
+            else:
+                convert_file_to_markdown(item_path, output_file_path, verbose)
     
     return True
 

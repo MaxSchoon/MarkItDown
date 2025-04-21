@@ -6,6 +6,8 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
 
 - Convert various document formats to Markdown
 - Automatically handle ZIP files by extracting and converting all contents to a single Markdown file
+- Process folders and maintain directory structure in output
+- Combine all files in a leaf folder (folder with no subfolders) into a single Markdown file
 - Preserve file organization within ZIP archives in the output Markdown
 - Add date to output filenames for easy versioning
 - Simple, directory-based workflow
@@ -39,12 +41,37 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
    ```
 3. Find the converted Markdown files in the `output` directory
 
+### Directory Structure Handling
+
+The tool processes directories with the following rules:
+
+- Individual files at any level are converted to individual Markdown files
+- The directory structure from input is preserved in the output
+- For each "leaf folder" (folder with no subfolders), all files are combined into a single Markdown file named after the folder
+- For folders with subfolders, each subfolder is processed recursively
+- All output files include the current date in their filename
+
+Example:
+```
+input/
+├── file1.pdf                   → output/file1_2025-04-21.md
+├── folder1/                    → output/folder1/
+│   ├── subfolder1/             → output/folder1/subfolder1/
+│   │   ├── doc1.docx           
+│   │   └── doc2.docx           
+│   │   (combined into)         → output/folder1/subfolder1/subfolder1_2025-04-21.md
+│   ├── subfolder2/             → output/folder1/subfolder2/
+│   │   └── report.pptx         → output/folder1/subfolder2/report_2025-04-21.md
+│   └── file2.xlsx              → output/folder1/file2_2025-04-21.md
+└── archive.zip                 → output/archive_2025-04-21.md
+```
+
 ### Command-Line Options
 
 You can customize the input and output directories using command-line flags:
 
 ```bash
-python MarkItDown.py -i /path/to/input/folder -o /path/to/output/folder
+python3 MarkItDown.py -i /path/to/input/folder -o /path/to/output/folder
 ```
 
 Available options:
@@ -59,13 +86,13 @@ Examples:
 
 ```bash
 # Use custom folders
-python MarkItDown.py --input documents --output markdown
+python3 MarkItDown.py --input documents --output markdown
 
 # Use absolute paths
-python MarkItDown.py -i /Users/username/Documents -o /Users/username/Markdown
+python3 MarkItDown.py -i /Users/username/Documents -o /Users/username/Markdown
 
 # Enable verbose mode
-python MarkItDown.py -v
+python3 MarkItDown.py -v
 ```
 
 ### Supported File Types
@@ -90,6 +117,11 @@ When a ZIP file is processed:
 Output files follow this naming convention:
 ```
 original_filename_YYYY-MM-DD.md
+```
+
+For leaf folders (folders with no subfolders), the output is a single file:
+```
+foldername_YYYY-MM-DD.md
 ```
 
 For example, if you process `example.zip` on April 21, 2025, the output file will be named `example_2025-04-21.md`.
