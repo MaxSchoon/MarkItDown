@@ -164,13 +164,25 @@ def process_directory(input_dir, output_dir, base_input_dir, base_output_dir, cu
         for item in os.listdir(input_dir):
             item_path = os.path.join(input_dir, item)
             if os.path.isdir(item_path) and not item.startswith('.'):
-                # Create relative output path
-                rel_path = os.path.relpath(item_path, base_input_dir)
-                output_subdir = os.path.join(base_output_dir, rel_path)
-                os.makedirs(output_subdir, exist_ok=True)
-                
-                # Process this subfolder
-                process_directory(item_path, output_subdir, base_input_dir, base_output_dir, current_date, verbose)
+                # Check if this subfolder is a leaf directory
+                if not has_subfolders(item_path):
+                    # This is a leaf directory, skip creating a subfolder and process it directly
+                    folder_name = os.path.basename(item_path)
+                    output_filename = f"{folder_name}_{current_date}.md"
+                    output_file_path = os.path.join(output_dir, output_filename)
+                    
+                    if verbose:
+                        print(f"Processing nested leaf folder {folder_name} -> {output_filename} (directly in parent)")
+                    
+                    combine_files_to_markdown(item_path, output_file_path, verbose)
+                else:
+                    # Create relative output path for non-leaf folders
+                    rel_path = os.path.relpath(item_path, base_input_dir)
+                    output_subdir = os.path.join(base_output_dir, rel_path)
+                    os.makedirs(output_subdir, exist_ok=True)
+                    
+                    # Process this subfolder
+                    process_directory(item_path, output_subdir, base_input_dir, base_output_dir, current_date, verbose)
                 
         # Also process individual files in this directory
         for filename in os.listdir(input_dir):
@@ -202,12 +214,16 @@ def process_directory(input_dir, output_dir, base_input_dir, base_output_dir, cu
                 
     else:
         # This is a leaf directory, combine all files into one markdown file
+        # Get the parent directory path to place the file one level up
+        parent_dir = os.path.dirname(output_dir)
         folder_name = os.path.basename(input_dir)
         output_filename = f"{folder_name}_{current_date}.md"
-        output_file_path = os.path.join(output_dir, output_filename)
+        
+        # Place the output file in the parent directory instead of the leaf directory
+        output_file_path = os.path.join(parent_dir, output_filename)
         
         if verbose:
-            print(f"Processing leaf folder {folder_name} -> {output_filename}")
+            print(f"Processing leaf folder {folder_name} -> {output_filename} (placing in parent directory)")
         
         combine_files_to_markdown(input_dir, output_file_path, verbose)
 
@@ -253,12 +269,24 @@ def process_all_files(input_dir, output_dir, verbose=False):
             continue
         
         if os.path.isdir(item_path):
-            # Create corresponding output directory
-            output_subdir = os.path.join(output_dir, item)
-            os.makedirs(output_subdir, exist_ok=True)
-            
-            # Process this directory
-            process_directory(item_path, output_subdir, input_dir, output_dir, current_date, verbose)
+            # Check if this is a leaf directory (no subfolders)
+            if not has_subfolders(item_path):
+                # This is a leaf directory, process it directly
+                folder_name = os.path.basename(item_path)
+                output_filename = f"{folder_name}_{current_date}.md"
+                output_file_path = os.path.join(output_dir, output_filename)
+                
+                if verbose:
+                    print(f"Processing leaf folder {folder_name} -> {output_filename} (directly in parent)")
+                
+                combine_files_to_markdown(item_path, output_file_path, verbose)
+            else:
+                # Create corresponding output directory for non-leaf folders
+                output_subdir = os.path.join(output_dir, item)
+                os.makedirs(output_subdir, exist_ok=True)
+                
+                # Process this directory
+                process_directory(item_path, output_subdir, input_dir, output_dir, current_date, verbose)
         else:
             # Process single file
             name_without_ext, ext = os.path.splitext(item)
