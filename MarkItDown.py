@@ -113,7 +113,7 @@ def combine_files_to_markdown(folder_path, output_file_path, verbose=False):
                 print(f"No files found in {folder_path}")
             return False
         
-        for filename in files:
+        for idx, filename in enumerate(files):
             file_path = os.path.join(folder_path, filename)
             
             if verbose:
@@ -133,6 +133,9 @@ def combine_files_to_markdown(folder_path, output_file_path, verbose=False):
                 all_markdown_content.append(f"# {filename}\n\nError converting file: {e.stderr}\n\n")
             except Exception as e:
                 all_markdown_content.append(f"# {filename}\n\nError converting file: {str(e)}\n\n")
+            # Add delimiter if not the last file
+            if idx < len(files) - 1:
+                all_markdown_content.append('---\n\n')
         
         # Combine all content and write to output file
         with open(output_file_path, 'w', encoding='utf-8') as f:
