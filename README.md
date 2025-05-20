@@ -126,6 +126,25 @@ foldername_YYYY-MM-DD.md
 
 For example, if you process `example.zip` on April 21, 2025, the output file will be named `example_2025-04-21.md`.
 
+## Machine-Readable File Headers
+
+When multiple files are combined into a single Markdown file (such as when processing a folder or ZIP archive), each file's content is preceded by a machine-readable header:
+
+```
+# file n - filename
+```
+
+- `n` is the 1-based index of the file within the combined output.
+- `filename` is the name of the file (or relative path for files inside ZIPs).
+
+This scheme allows other programs or scripts to easily locate and extract individual files using regular expressions. For example, you can use the following regex to find each file section:
+
+```
+^# file (\d+) - (.+)$
+```
+
+This makes it easy to parse, split, or analyze the combined Markdown files programmatically.
+
 ## Troubleshooting
 
 If you encounter errors:

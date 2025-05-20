@@ -57,32 +57,30 @@ def process_zip_file(zip_file_path, output_file_path, verbose=False):
         
         # Process each file in the extracted directory
         all_markdown_content = []
-        
+        file_list = []
         for root, _, files in os.walk(temp_dir):
             for filename in files:
                 file_path = os.path.join(root, filename)
                 # Skip hidden files
                 if os.path.basename(file_path).startswith('.'):
                     continue
-                
-                if verbose:
-                    print(f"Processing {os.path.relpath(file_path, temp_dir)}")
-                
-                try:
-                    # Convert file to markdown
-                    result = subprocess.run(['markitdown', file_path], 
-                                           capture_output=True, 
-                                           text=True, 
-                                           check=True)
-                    content = result.stdout
-                    
-                    # Add file header and content
-                    relative_path = os.path.relpath(file_path, temp_dir)
-                    all_markdown_content.append(f"# {relative_path}\n\n{content}\n\n")
-                except subprocess.CalledProcessError as e:
-                    all_markdown_content.append(f"# {os.path.relpath(file_path, temp_dir)}\n\nError converting file: {e.stderr}\n\n")
-                except Exception as e:
-                    all_markdown_content.append(f"# {os.path.relpath(file_path, temp_dir)}\n\nError converting file: {str(e)}\n\n")
+                file_list.append((file_path, os.path.relpath(file_path, temp_dir)))
+        for idx, (file_path, relative_path) in enumerate(file_list):
+            if verbose:
+                print(f"Processing {relative_path}")
+            try:
+                # Convert file to markdown
+                result = subprocess.run(['markitdown', file_path], 
+                                       capture_output=True, 
+                                       text=True, 
+                                       check=True)
+                content = result.stdout
+                # Add file header and content
+                all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\n{content}\n\n")
+            except subprocess.CalledProcessError as e:
+                all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\nError converting file: {e.stderr}\n\n")
+            except Exception as e:
+                all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\nError converting file: {str(e)}\n\n")
         
         # Combine all content and write to output file
         with open(output_file_path, 'w', encoding='utf-8') as f:
@@ -128,11 +126,11 @@ def combine_files_to_markdown(folder_path, output_file_path, verbose=False):
                 content = result.stdout
                 
                 # Add file header and content
-                all_markdown_content.append(f"# {filename}\n\n{content}\n\n")
+                all_markdown_content.append(f"# file {idx+1} - {filename}\n\n{content}\n\n")
             except subprocess.CalledProcessError as e:
-                all_markdown_content.append(f"# {filename}\n\nError converting file: {e.stderr}\n\n")
+                all_markdown_content.append(f"# file {idx+1} - {filename}\n\nError converting file: {e.stderr}\n\n")
             except Exception as e:
-                all_markdown_content.append(f"# {filename}\n\nError converting file: {str(e)}\n\n")
+                all_markdown_content.append(f"# file {idx+1} - {filename}\n\nError converting file: {str(e)}\n\n")
             # Add delimiter if not the last file
             if idx < len(files) - 1:
                 all_markdown_content.append('---\n\n')
