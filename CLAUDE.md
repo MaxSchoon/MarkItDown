@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Environment
+
+- **Platform**: macOS
+- **Python**: Use `python3` and `pip3` (not `python`/`pip`)
+- **LSP**: Python LSP is available via Claude Code plugin
+
 ## Project Overview
 
 MarkItDown is a Python utility that batch-converts documents (PDF, DOCX, PPTX, XLSX) and ZIP archives to Markdown using Microsoft's `markitdown` CLI tool. It adds directory structure handling and file combining logic on top of the base tool.
@@ -10,29 +16,25 @@ MarkItDown is a Python utility that batch-converts documents (PDF, DOCX, PPTX, X
 
 ```bash
 # Run with defaults (input/ → output/)
-python MarkItDown.py
+python3 MarkItDown.py
 
 # Custom directories
-python MarkItDown.py -i /path/to/input -o /path/to/output
+python3 MarkItDown.py -i /path/to/input -o /path/to/output
 
 # Verbose mode
-python MarkItDown.py -v
+python3 MarkItDown.py -v
 ```
 
-**Dependencies**: `pip install -r requirements.txt`
+**Dependencies**: `pip3 install -r requirements.txt`
 
 ## Development Setup
 
 ```bash
-# Install Python LSP for better code intelligence
-pip install python-lsp-server
-
 # Install all dependencies
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
-# For OlmOCR PDF support, also install poppler
-brew install poppler  # macOS
-# apt install poppler-utils  # Ubuntu/Debian
+# For OlmOCR PDF support, install poppler
+brew install poppler
 ```
 
 ## Architecture
