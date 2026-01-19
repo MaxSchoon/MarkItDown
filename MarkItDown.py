@@ -7,7 +7,170 @@ import tempfile
 import shutil
 import subprocess
 import argparse
+import base64
+import io
 from datetime import datetime
+
+# Optional imports for OlmOCR
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+try:
+    from pdf2image import convert_from_path
+    from PIL import Image
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+
+# Load environment variables
+if DOTENV_AVAILABLE:
+    load_dotenv()
+
+# Configuration
+DEEPINFRA_API_KEY = os.getenv("DEEPINFRA_API_KEY", "")
+USE_OLMOCR = os.getenv("USE_OLMOCR", "true").lower() == "true"
+DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
+OLMOCR_MODEL = "allenai/olmOCR-2-7B-1025"
+
+# Global flag to disable OCR (set via CLI)
+DISABLE_OCR = False
+
+
+def is_olmocr_available():
+    """Check if OlmOCR is available and configured"""
+    if DISABLE_OCR:
+        return False
+    if not USE_OLMOCR:
+        return False
+    if not DEEPINFRA_API_KEY:
+        return False
+    if not OPENAI_AVAILABLE:
+        return False
+    if not PDF2IMAGE_AVAILABLE:
+        return False
+    return True
+
+
+def get_deepinfra_client():
+    """Create an OpenAI-compatible client for DeepInfra"""
+    return OpenAI(
+        api_key=DEEPINFRA_API_KEY,
+        base_url=DEEPINFRA_BASE_URL,
+    )
+
+
+def image_to_base64(image, format="JPEG", quality=85):
+    """Convert a PIL Image to base64 string"""
+    buffer = io.BytesIO()
+    if image.mode == "RGBA":
+        image = image.convert("RGB")
+    image.save(buffer, format=format, quality=quality)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
+    """Convert a single PDF page image to markdown using OlmOCR"""
+    try:
+        base64_image = image_to_base64(image)
+
+        response = client.chat.completions.create(
+            model=OLMOCR_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract all text from this document page. Return the content as clean markdown, preserving the structure (headings, lists, tables, etc.). Do not add any commentary."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=4096,
+        )
+
+        return response.choices[0].message.content
+    except Exception as e:
+        if verbose:
+            print(f"Error processing page {page_num} with OlmOCR: {str(e)}")
+        return None
+
+
+def convert_pdf_with_olmocr(pdf_path, verbose=False):
+    """Convert a PDF file to markdown using OlmOCR"""
+    try:
+        if verbose:
+            print(f"Using OlmOCR for {pdf_path}")
+
+        # Convert PDF pages to images
+        images = convert_from_path(pdf_path, dpi=150)
+
+        if verbose:
+            print(f"Converted PDF to {len(images)} page images")
+
+        client = get_deepinfra_client()
+        markdown_parts = []
+
+        for i, image in enumerate(images):
+            page_num = i + 1
+            if verbose:
+                print(f"Processing page {page_num}/{len(images)}")
+
+            page_content = convert_pdf_page_with_olmocr(client, image, page_num, verbose)
+
+            if page_content:
+                if len(images) > 1:
+                    markdown_parts.append(f"<!-- Page {page_num} -->\n\n{page_content}")
+                else:
+                    markdown_parts.append(page_content)
+            else:
+                markdown_parts.append(f"<!-- Page {page_num}: OCR failed -->")
+
+        return "\n\n---\n\n".join(markdown_parts)
+    except Exception as e:
+        if verbose:
+            print(f"OlmOCR failed for {pdf_path}: {str(e)}")
+        return None
+
+
+def convert_file_to_markdown_string(input_file_path, verbose=False):
+    """Convert a single file to markdown and return as string"""
+    ext = os.path.splitext(input_file_path)[1].lower()
+
+    # Use OlmOCR for PDFs if available
+    if ext == ".pdf" and is_olmocr_available():
+        result = convert_pdf_with_olmocr(input_file_path, verbose)
+        if result is not None:
+            return result
+        if verbose:
+            print(f"Falling back to markitdown for {input_file_path}")
+
+    # Fall back to markitdown CLI
+    try:
+        result = subprocess.run(['markitdown', input_file_path],
+                               capture_output=True,
+                               text=True,
+                               check=True)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        raise Exception(f"markitdown error: {e.stderr}")
+    except Exception as e:
+        raise Exception(str(e))
 
 # Add argument parsing
 def parse_arguments():
@@ -18,27 +181,22 @@ def parse_arguments():
                         help="Output directory for converted Markdown files (default: 'output')")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
+    parser.add_argument("--no-ocr", action="store_true",
+                        help="Disable OlmOCR and use markitdown for all files including PDFs")
     return parser.parse_args()
 
 def convert_file_to_markdown(input_file_path, output_file_path, verbose=False):
-    """Convert a single file to markdown using MarkItDown"""
+    """Convert a single file to markdown using OlmOCR for PDFs or MarkItDown for other formats"""
     try:
-        # Use markitdown command line tool
-        result = subprocess.run(['markitdown', input_file_path], 
-                               capture_output=True, 
-                               text=True, 
-                               check=True)
-        
+        content = convert_file_to_markdown_string(input_file_path, verbose)
+
         # Write the output to the specified file
         with open(output_file_path, 'w', encoding='utf-8') as f:
-            f.write(result.stdout)
-        
+            f.write(content)
+
         if verbose:
             print(f"Successfully converted {input_file_path} to {output_file_path}")
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"Error converting {input_file_path}: {e.stderr}")
-        return False
     except Exception as e:
         print(f"Error converting {input_file_path}: {str(e)}")
         return False
@@ -69,16 +227,10 @@ def process_zip_file(zip_file_path, output_file_path, verbose=False):
             if verbose:
                 print(f"Processing {relative_path}")
             try:
-                # Convert file to markdown
-                result = subprocess.run(['markitdown', file_path], 
-                                       capture_output=True, 
-                                       text=True, 
-                                       check=True)
-                content = result.stdout
+                # Convert file to markdown using the helper
+                content = convert_file_to_markdown_string(file_path, verbose)
                 # Add file header and content
                 all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\n{content}\n\n")
-            except subprocess.CalledProcessError as e:
-                all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\nError converting file: {e.stderr}\n\n")
             except Exception as e:
                 all_markdown_content.append(f"# file {idx+1} - {relative_path}\n\nError converting file: {str(e)}\n\n")
         
@@ -118,17 +270,11 @@ def combine_files_to_markdown(folder_path, output_file_path, verbose=False):
                 print(f"Processing {filename} in folder {folder_name}")
             
             try:
-                # Convert file to markdown
-                result = subprocess.run(['markitdown', file_path], 
-                                       capture_output=True, 
-                                       text=True, 
-                                       check=True)
-                content = result.stdout
-                
+                # Convert file to markdown using the helper
+                content = convert_file_to_markdown_string(file_path, verbose)
+
                 # Add file header and content
                 all_markdown_content.append(f"# file {idx+1} - {filename}\n\n{content}\n\n")
-            except subprocess.CalledProcessError as e:
-                all_markdown_content.append(f"# file {idx+1} - {filename}\n\nError converting file: {e.stderr}\n\n")
             except Exception as e:
                 all_markdown_content.append(f"# file {idx+1} - {filename}\n\nError converting file: {str(e)}\n\n")
             # Add delimiter if not the last file
@@ -307,4 +453,27 @@ def process_all_files(input_dir, output_dir, verbose=False):
 
 if __name__ == "__main__":
     args = parse_arguments()
+
+    # Set OCR flag based on CLI argument
+    if args.no_ocr:
+        DISABLE_OCR = True
+
+    # Print OCR status in verbose mode
+    if args.verbose:
+        if is_olmocr_available():
+            print("OlmOCR is available and will be used for PDFs")
+        else:
+            reasons = []
+            if DISABLE_OCR:
+                reasons.append("disabled via --no-ocr")
+            elif not USE_OLMOCR:
+                reasons.append("USE_OLMOCR=false in .env")
+            elif not DEEPINFRA_API_KEY:
+                reasons.append("DEEPINFRA_API_KEY not set")
+            elif not OPENAI_AVAILABLE:
+                reasons.append("openai package not installed")
+            elif not PDF2IMAGE_AVAILABLE:
+                reasons.append("pdf2image/Pillow not installed")
+            print(f"OlmOCR not available ({', '.join(reasons)}), using markitdown for PDFs")
+
     process_all_files(args.input_dir, args.output_dir, args.verbose)

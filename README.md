@@ -18,12 +18,33 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
 - Python 3.6 or higher
 - Microsoft MarkItDown tool installed (`pip install markitdown`)
 
+### Optional: OlmOCR for Enhanced PDF OCR
+
+For better PDF text extraction, you can enable OlmOCR which uses AI-powered OCR via the DeepInfra API:
+
+1. Install system dependency (poppler):
+   ```bash
+   # macOS
+   brew install poppler
+
+   # Ubuntu/Debian
+   apt install poppler-utils
+   ```
+
+2. Get a DeepInfra API key from https://deepinfra.com
+
+3. Create a `.env` file:
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your API key
+   ```
+
 ## Installation
 
 1. Clone this repository or download the script
-2. Ensure MarkItDown is installed and available in your PATH:
+2. Install dependencies:
    ```bash
-   pip install markitdown
+   pip install -r requirements.txt
    ```
 3. Create the input and output directories if they don't exist:
    ```bash
@@ -81,6 +102,7 @@ Available options:
 | `-i` | `--input` | Specify custom input directory (default: `input`) |
 | `-o` | `--output` | Specify custom output directory (default: `output`) |
 | `-v` | `--verbose` | Enable verbose output for detailed processing information |
+|      | `--no-ocr` | Disable OlmOCR and use markitdown for all files including PDFs |
 
 Examples:
 
@@ -93,6 +115,9 @@ python3 MarkItDown.py -i /Users/username/Documents -o /Users/username/Markdown
 
 # Enable verbose mode
 python3 MarkItDown.py -v
+
+# Disable OlmOCR (use markitdown for all files)
+python3 MarkItDown.py --no-ocr
 ```
 
 ### Supported File Types
