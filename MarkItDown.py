@@ -9,6 +9,7 @@ import subprocess
 import argparse
 import base64
 import io
+import asyncio
 from datetime import datetime
 
 # Optional imports for OlmOCR
@@ -19,7 +20,7 @@ except ImportError:
     DOTENV_AVAILABLE = False
 
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
@@ -37,9 +38,68 @@ if DOTENV_AVAILABLE:
 
 # Configuration
 DEEPINFRA_API_KEY = os.getenv("DEEPINFRA_API_KEY", "")
+DEEPINFRA_API_KEY_2 = os.getenv("DEEPINFRA_API_KEY_2", "")  # Optional second API key
 USE_OLMOCR = os.getenv("USE_OLMOCR", "true").lower() == "true"
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
 OLMOCR_MODEL = "allenai/olmOCR-2-7B-1025"
+
+# Collect all available API keys
+API_KEYS = [k for k in [DEEPINFRA_API_KEY, DEEPINFRA_API_KEY_2] if k]
+
+# OCR settings optimized for annual reports and financial documents
+OCR_DPI = int(os.getenv("OCR_DPI", "200"))  # Higher DPI for better text clarity
+OCR_MAX_TOKENS = int(os.getenv("OCR_MAX_TOKENS", "8192"))  # More tokens for dense pages
+OCR_IMAGE_FORMAT = os.getenv("OCR_IMAGE_FORMAT", "PNG")  # PNG for lossless quality
+# With multiple API keys, we can use 100 concurrent per key (200 total for 2 keys)
+OCR_CONCURRENCY_PER_KEY = int(os.getenv("OCR_CONCURRENCY_PER_KEY", "100"))
+OCR_CONCURRENCY = OCR_CONCURRENCY_PER_KEY * len(API_KEYS) if API_KEYS else 50
+
+# Prompt for extracting table of contents structure
+TOC_EXTRACTION_PROMPT = """Look at this page. Does it show a TABLE OF CONTENTS with chapter names and page numbers?
+
+If YES, list ONLY the MAIN CHAPTER TITLES (the top-level sections, not subsections).
+Format each chapter on its own line starting with ">>>" like this:
+>>> Chapter Name Here
+
+If this is NOT a table of contents page, respond with only: NOT_A_TOC_PAGE
+
+Example good response for a TOC page:
+>>> Message from the CEO
+>>> Company Overview
+>>> Financial Statements
+>>> Risk Management
+>>> Governance
+
+Remember: Only list the MAIN chapters/sections you see in the table of contents. Start each with >>>"""
+
+# Optimized prompt for financial documents and annual reports
+OCR_PROMPT = """Extract all text from this financial document page into well-structured markdown.
+
+Output requirements:
+- Headings: Mark section titles with # ## ### based on visual prominence. Large/bold text = #, medium sections = ##, small sections = ###
+- Tables: Convert to markdown tables with | separators or HTML tables for complex layouts
+- Lists: Use - for bullets, 1. 2. 3. for numbered
+- Numbers: Preserve exact values including currency symbols (€, $, £), decimals, percentages
+- Structure: Maintain logical reading order and paragraph breaks
+- Accuracy: Extract every word and number precisely
+
+Return only the markdown content, no explanations."""
+
+# Extended prompt with document structure context (used when TOC is available)
+OCR_PROMPT_WITH_STRUCTURE = """Extract all text from this financial document page into well-structured markdown.
+
+Output requirements:
+- Headings: Mark section titles with # ## ### based on visual prominence. Large/bold titles = #, sections = ##, subsections = ###. {heading_context}
+- Tables: Convert to markdown tables with | separators or HTML tables for complex layouts
+- Lists: Use - for bullets, 1. 2. 3. for numbered
+- Numbers: Preserve exact values including currency symbols (€, $, £), decimals, percentages
+- Structure: Maintain logical reading order and paragraph breaks
+- Accuracy: Extract every word and number precisely
+
+Return only the markdown content, no explanations."""
+
+# Default heading context (without document structure)
+DEFAULT_HEADING_CONTEXT = "Use # for major titles, ## for sections, ### for subsections"
 
 # Global flag to disable OCR (set via CLI)
 DISABLE_OCR = False
@@ -68,19 +128,41 @@ def get_deepinfra_client():
     )
 
 
-def image_to_base64(image, format="JPEG", quality=85):
+def get_async_deepinfra_client():
+    """Create an async OpenAI-compatible client for DeepInfra"""
+    return AsyncOpenAI(
+        api_key=DEEPINFRA_API_KEY,
+        base_url=DEEPINFRA_BASE_URL,
+    )
+
+
+def get_async_deepinfra_clients():
+    """Create async clients for all available API keys"""
+    return [
+        AsyncOpenAI(api_key=key, base_url=DEEPINFRA_BASE_URL)
+        for key in API_KEYS
+    ]
+
+
+def image_to_base64(image, format=None, quality=95):
     """Convert a PIL Image to base64 string"""
+    if format is None:
+        format = OCR_IMAGE_FORMAT
     buffer = io.BytesIO()
-    if image.mode == "RGBA":
+    if format == "JPEG" and image.mode == "RGBA":
         image = image.convert("RGB")
-    image.save(buffer, format=format, quality=quality)
+    if format == "PNG":
+        image.save(buffer, format=format, optimize=True)
+    else:
+        image.save(buffer, format=format, quality=quality)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
-    """Convert a single PDF page image to markdown using OlmOCR"""
+    """Convert a single PDF page image to markdown using OlmOCR (sync version)"""
     try:
         base64_image = image_to_base64(image)
+        mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
 
         response = client.chat.completions.create(
             model=OLMOCR_MODEL,
@@ -90,18 +172,18 @@ def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
                     "content": [
                         {
                             "type": "text",
-                            "text": "OCR this document page to markdown. Use # for headings, - for lists. Preserve document structure. Output only the extracted content, no commentary."
+                            "text": OCR_PROMPT
                         },
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
+                                "url": f"data:{mime_type};base64,{base64_image}"
                             }
                         }
                     ]
                 }
             ],
-            max_tokens=4096,
+            max_tokens=OCR_MAX_TOKENS,
         )
 
         return response.choices[0].message.content
@@ -111,40 +193,368 @@ def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
         return None
 
 
-def convert_pdf_with_olmocr(pdf_path, verbose=False):
-    """Convert a PDF file to markdown using OlmOCR"""
+async def convert_pdf_page_with_olmocr_async(client, base64_image, page_num, semaphore, prompt=None, verbose=False):
+    """Convert a single PDF page image to markdown using OlmOCR (async version)"""
+    async with semaphore:
+        try:
+            mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
+            ocr_prompt = prompt if prompt else OCR_PROMPT
+
+            response = await client.chat.completions.create(
+                model=OLMOCR_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": ocr_prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=OCR_MAX_TOKENS,
+            )
+
+            if verbose:
+                print(f"  Completed page {page_num}", flush=True)
+
+            return (page_num, response.choices[0].message.content)
+        except Exception as e:
+            if verbose:
+                print(f"  Error on page {page_num}: {str(e)}", flush=True)
+            return (page_num, None)
+
+
+def get_pdf_page_count(pdf_path):
+    """Get the total number of pages in a PDF without loading all pages"""
+    from pdf2image.pdf2image import pdfinfo_from_path
+    info = pdfinfo_from_path(pdf_path)
+    return info["Pages"]
+
+
+def extract_toc_from_pages(client, images, verbose=False):
+    """Extract table of contents from the first few pages of a PDF"""
+    toc_content = []
+
+    for i, image in enumerate(images):
+        page_num = i + 1
+        try:
+            base64_image = image_to_base64(image)
+            mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
+
+            response = client.chat.completions.create(
+                model=OLMOCR_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": TOC_EXTRACTION_PROMPT},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}
+                        ]
+                    }
+                ],
+                max_tokens=2048,
+            )
+
+            result = response.choices[0].message.content.strip()
+            # Only include if it contains actual TOC markers (>>>)
+            if result and ">>>" in result:
+                toc_content.append(result)
+                if verbose:
+                    print(f"  Found TOC structure on page {page_num}", flush=True)
+            elif verbose and "NOT_A_TOC" not in result.upper():
+                pass  # Silently skip non-TOC pages
+
+        except Exception as e:
+            if verbose:
+                print(f"  Error extracting TOC from page {page_num}: {str(e)}", flush=True)
+
+    return "\n".join(toc_content) if toc_content else None
+
+
+def parse_toc_structure(toc_text):
+    """Parse extracted TOC text into a hierarchical structure"""
+    if not toc_text:
+        return None
+
+    structure = {
+        "chapters": [],
+        "sections": {},  # Maps section names to their chapter
+        "section_pages": {}  # Maps page numbers to section info
+    }
+
+    for line in toc_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip non-TOC indicators
+        if "NOT_A_TOC" in line.upper() or "NO_TOC" in line.upper():
+            continue
+
+        # Parse simple >>> format (primary format)
+        if line.startswith(">>>"):
+            chapter_name = line.replace(">>>", "").strip()
+            if chapter_name and chapter_name not in structure["chapters"]:
+                structure["chapters"].append(chapter_name)
+            continue
+
+        # Also support MAIN_SECTION format
+        if line.startswith("MAIN_SECTION:"):
+            chapter_name = line.replace("MAIN_SECTION:", "").strip()
+            if chapter_name and chapter_name not in structure["chapters"]:
+                structure["chapters"].append(chapter_name)
+            continue
+
+        # Support CHAPTER format
+        if line.startswith("CHAPTER:"):
+            chapter_name = line.replace("CHAPTER:", "").strip()
+            if chapter_name and chapter_name not in structure["chapters"]:
+                structure["chapters"].append(chapter_name)
+
+    return structure if structure["chapters"] else None
+
+
+def create_heading_context(toc_structure):
+    """Create heading context based on TOC structure"""
+    if not toc_structure:
+        return DEFAULT_HEADING_CONTEXT
+
+    # Build chapter list for context
+    chapters_list = ", ".join(toc_structure["chapters"][:6])
+
+    # Keep the instruction simple - just identify headings normally, post-processing will normalize levels
+    return f"Use # for major section titles, ## for subsections, ### for sub-subsections. Document structure reference: {chapters_list}"
+
+
+def normalize_headings(markdown_text, toc_structure):
+    """Post-process markdown to normalize heading levels based on TOC structure.
+
+    This function does two things:
+    1. Converts plain text lines that match chapter names into H1 headings
+    2. Normalizes existing heading levels based on whether they match chapter names
+    """
+    if not toc_structure or not markdown_text:
+        return markdown_text
+
+    # Create lowercase chapter names for matching
+    chapter_names_lower = set(ch.lower().strip() for ch in toc_structure["chapters"])
+
+    lines = markdown_text.split("\n")
+    result_lines = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        stripped_lower = stripped.lower()
+
+        # Check if this is a heading line
+        if line.startswith("#"):
+            # Count heading level
+            level = 0
+            for char in line:
+                if char == "#":
+                    level += 1
+                else:
+                    break
+
+            # Extract heading text
+            heading_text = line[level:].strip()
+            heading_text_lower = heading_text.lower().strip()
+
+            # Check if this heading matches a chapter name
+            is_chapter = heading_text_lower in chapter_names_lower
+
+            if level == 1:  # H1 heading
+                if is_chapter:
+                    # Keep as H1 - it's a main chapter
+                    result_lines.append(line)
+                else:
+                    # Demote to H2 - it's not a main chapter
+                    result_lines.append("## " + heading_text)
+            elif level == 2:  # H2 heading
+                if is_chapter:
+                    # Promote to H1 - it's a main chapter
+                    result_lines.append("# " + heading_text)
+                else:
+                    result_lines.append(line)
+            else:
+                # Keep other heading levels as-is
+                result_lines.append(line)
+        # Check if plain text line matches a chapter name (convert to H1)
+        elif stripped_lower in chapter_names_lower and len(stripped) < 80:
+            result_lines.append("# " + stripped)
+        else:
+            result_lines.append(line)
+
+    return "\n".join(result_lines)
+
+
+async def process_batch_async(clients, images, batch_start, total_pages, semaphore, toc_structure=None, verbose=False):
+    """Process a batch of images concurrently using multiple API clients"""
+    # Convert images to base64 first (this is CPU-bound, done synchronously)
+    base64_images = []
+    for i, image in enumerate(images):
+        page_num = batch_start + i
+        base64_images.append((page_num, image_to_base64(image)))
+
+    # Create prompt based on whether we have TOC structure
+    if toc_structure:
+        heading_context = create_heading_context(toc_structure)
+        page_prompt = OCR_PROMPT_WITH_STRUCTURE.format(heading_context=heading_context)
+    else:
+        page_prompt = OCR_PROMPT
+
+    # Create async tasks distributed across clients (round-robin)
+    tasks = []
+    for idx, (page_num, b64_img) in enumerate(base64_images):
+        # Distribute requests across clients
+        client = clients[idx % len(clients)]
+
+        tasks.append(
+            convert_pdf_page_with_olmocr_async(client, b64_img, page_num, semaphore, page_prompt, verbose)
+        )
+
+    # Run all tasks concurrently
+    results = await asyncio.gather(*tasks)
+
+    return results
+
+
+def convert_pdf_with_olmocr(pdf_path, verbose=False, batch_size=100):
+    """Convert a PDF file to markdown using OlmOCR with parallel API calls and structure-aware headings"""
     try:
         if verbose:
-            print(f"Using OlmOCR for {pdf_path}")
+            print(f"Using OlmOCR for {pdf_path}", flush=True)
+            print(f"  Settings: DPI={OCR_DPI}, Format={OCR_IMAGE_FORMAT}, MaxTokens={OCR_MAX_TOKENS}", flush=True)
+            print(f"  API keys: {len(API_KEYS)}, Parallel requests: {OCR_CONCURRENCY} concurrent", flush=True)
 
-        # Convert PDF pages to images
-        images = convert_from_path(pdf_path, dpi=150)
+        # Get total page count without loading all pages
+        total_pages = get_pdf_page_count(pdf_path)
 
         if verbose:
-            print(f"Converted PDF to {len(images)} page images")
+            print(f"PDF has {total_pages} pages (processing in batches of {batch_size} with {OCR_CONCURRENCY} parallel API calls)", flush=True)
 
-        client = get_deepinfra_client()
-        markdown_parts = []
+        # ========== PASS 1: Extract Table of Contents ==========
+        toc_structure = None
+        toc_pages_to_scan = min(10, total_pages)  # Scan first 10 pages for TOC
 
-        for i, image in enumerate(images):
-            page_num = i + 1
+        if verbose:
+            print(f"Pass 1: Extracting document structure from first {toc_pages_to_scan} pages...", flush=True)
+
+        try:
+            # Load first few pages to extract TOC
+            toc_images = convert_from_path(
+                pdf_path,
+                dpi=OCR_DPI,
+                first_page=1,
+                last_page=toc_pages_to_scan
+            )
+
+            # Extract TOC using sync client
+            sync_client = get_deepinfra_client()
+            toc_text = extract_toc_from_pages(sync_client, toc_images, verbose)
+
+            if toc_text:
+                toc_structure = parse_toc_structure(toc_text)
+                if toc_structure and verbose:
+                    print(f"  Found {len(toc_structure['chapters'])} chapters in document structure", flush=True)
+                    for ch in toc_structure['chapters'][:5]:
+                        print(f"    - {ch}", flush=True)
+                    if len(toc_structure['chapters']) > 5:
+                        print(f"    ... and {len(toc_structure['chapters']) - 5} more", flush=True)
+            elif verbose:
+                print("  No table of contents found, using default heading rules", flush=True)
+
+            del toc_images
+        except Exception as e:
             if verbose:
-                print(f"Processing page {page_num}/{len(images)}")
+                print(f"  TOC extraction failed: {str(e)}, using default heading rules", flush=True)
 
-            page_content = convert_pdf_page_with_olmocr(client, image, page_num, verbose)
+        # ========== PASS 2: Convert Pages with Structure Context ==========
+        if verbose:
+            print(f"Pass 2: Converting pages with {'structure-aware' if toc_structure else 'default'} heading rules...", flush=True)
 
-            if page_content:
-                if len(images) > 1:
-                    markdown_parts.append(f"<!-- Page {page_num} -->\n\n{page_content}")
+        # Results dictionary to maintain page order
+        results_dict = {}
+
+        # Create async clients and semaphore
+        async def run_parallel_conversion():
+            clients = get_async_deepinfra_clients()
+            semaphore = asyncio.Semaphore(OCR_CONCURRENCY)
+
+            try:
+                # Process pages in batches to manage memory
+                for batch_start in range(1, total_pages + 1, batch_size):
+                    batch_end = min(batch_start + batch_size - 1, total_pages)
+
+                    if verbose:
+                        print(f"Loading pages {batch_start}-{batch_end}...", flush=True)
+
+                    # Load this batch of pages
+                    images = convert_from_path(
+                        pdf_path,
+                        dpi=OCR_DPI,
+                        first_page=batch_start,
+                        last_page=batch_end
+                    )
+
+                    if verbose:
+                        print(f"Processing pages {batch_start}-{batch_end} in parallel...", flush=True)
+
+                    # Process batch with parallel API calls across multiple clients
+                    # Pass TOC structure for heading context
+                    batch_results = await process_batch_async(
+                        clients, images, batch_start, total_pages, semaphore, toc_structure, verbose
+                    )
+
+                    # Store results
+                    for page_num, content in batch_results:
+                        results_dict[page_num] = content
+
+                    # Clear images from memory
+                    del images
+
+                    if verbose:
+                        print(f"Completed pages {batch_start}-{batch_end} ({batch_end}/{total_pages})", flush=True)
+            finally:
+                # Close async clients to avoid event loop warnings
+                for client in clients:
+                    await client.close()
+
+        # Run the async conversion
+        asyncio.run(run_parallel_conversion())
+
+        # Build markdown output in page order
+        markdown_parts = []
+        for page_num in range(1, total_pages + 1):
+            content = results_dict.get(page_num)
+            if content:
+                if total_pages > 1:
+                    markdown_parts.append(f"<!-- Page {page_num} -->\n\n{content}")
                 else:
-                    markdown_parts.append(page_content)
+                    markdown_parts.append(content)
             else:
                 markdown_parts.append(f"<!-- Page {page_num}: OCR failed -->")
 
-        return "\n\n---\n\n".join(markdown_parts)
+        final_output = "\n\n---\n\n".join(markdown_parts)
+
+        # Post-process to normalize heading levels based on TOC structure
+        if toc_structure:
+            if verbose:
+                print("Normalizing heading levels based on document structure...", flush=True)
+            final_output = normalize_headings(final_output, toc_structure)
+
+        return final_output
     except Exception as e:
         if verbose:
-            print(f"OlmOCR failed for {pdf_path}: {str(e)}")
+            print(f"OlmOCR failed for {pdf_path}: {str(e)}", flush=True)
         return None
 
 
