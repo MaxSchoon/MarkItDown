@@ -20,7 +20,10 @@ A Python utility for converting documents (including ZIP archives) to Markdown f
 
 ### Optional: OlmOCR for Enhanced PDF OCR
 
-For better PDF text extraction, you can enable OlmOCR which uses AI-powered OCR via the DeepInfra API:
+For better PDF text extraction, you can enable OlmOCR which uses AI-powered OCR via the DeepInfra API. Features include:
+- **Two-pass OCR**: Extracts table of contents first, then converts with structure-aware headings
+- **Parallel processing**: 100-200 concurrent API calls for fast conversion
+- **Multi-API key support**: Use multiple API keys for even higher throughput
 
 1. Install system dependency (poppler):
    ```bash
@@ -38,6 +41,13 @@ For better PDF text extraction, you can enable OlmOCR which uses AI-powered OCR 
    cp .env.example .env
    # Edit .env and add your API key
    ```
+
+4. Optional: Add a second API key for 2x throughput:
+   ```bash
+   DEEPINFRA_API_KEY_2=your_second_key
+   ```
+
+For detailed OCR settings and annual report conversion guidelines, see [docs/ManualAnnualReport.md](docs/ManualAnnualReport.md).
 
 ## Installation
 
