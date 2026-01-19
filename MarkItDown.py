@@ -90,7 +90,7 @@ def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
                     "content": [
                         {
                             "type": "text",
-                            "text": "Extract all text from this document page. Return the content as clean markdown, preserving the structure (headings, lists, tables, etc.). Do not add any commentary."
+                            "text": "OCR this document page to markdown. Use # for headings, - for lists. Preserve document structure. Output only the extracted content, no commentary."
                         },
                         {
                             "type": "image_url",
