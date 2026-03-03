@@ -12,7 +12,7 @@ import io
 import asyncio
 from datetime import datetime
 
-# Optional imports for OlmOCR
+# Optional imports for OCR
 try:
     from dotenv import load_dotenv
     DOTENV_AVAILABLE = True
@@ -39,16 +39,14 @@ if DOTENV_AVAILABLE:
 # Configuration
 DEEPINFRA_API_KEY = os.getenv("DEEPINFRA_API_KEY", "")
 DEEPINFRA_API_KEY_2 = os.getenv("DEEPINFRA_API_KEY_2", "")  # Optional second API key
-USE_OLMOCR = os.getenv("USE_OLMOCR", "true").lower() == "true"
+USE_OCR = os.getenv("USE_OLMOCR", "true").lower() == "true"  # env var kept for backwards compat
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
-OLMOCR_MODEL = "allenai/olmOCR-2-7B-1025"
 
 # Collect all available API keys
 API_KEYS = [k for k in [DEEPINFRA_API_KEY, DEEPINFRA_API_KEY_2] if k]
 
 # OCR settings optimized for annual reports and financial documents
 OCR_DPI = int(os.getenv("OCR_DPI", "200"))  # Higher DPI for better text clarity
-OCR_MAX_TOKENS = int(os.getenv("OCR_MAX_TOKENS", "8192"))  # More tokens for dense pages
 OCR_IMAGE_FORMAT = os.getenv("OCR_IMAGE_FORMAT", "PNG")  # PNG for lossless quality
 # With multiple API keys, we can use 100 concurrent per key (200 total for 2 keys)
 OCR_CONCURRENCY_PER_KEY = int(os.getenv("OCR_CONCURRENCY_PER_KEY", "100"))
@@ -101,15 +99,43 @@ Return only the markdown content, no explanations."""
 # Default heading context (without document structure)
 DEFAULT_HEADING_CONTEXT = "Use # for major titles, ## for sections, ### for subsections"
 
+# OCR model configurations
+OCR_MODELS = {
+    "olmocr": {
+        "name": "OlmOCR",
+        "model_id": "allenai/olmOCR-2-7B-1025",
+        "prompt": OCR_PROMPT,
+        "prompt_with_structure": OCR_PROMPT_WITH_STRUCTURE,
+        "toc_prompt": TOC_EXTRACTION_PROMPT,
+        "default_max_tokens": 8192,
+        "two_pass": True,
+    },
+    "paddleocr": {
+        "name": "PaddleOCR-VL",
+        "model_id": "PaddlePaddle/PaddleOCR-VL-0.9B",
+        "prompt": "OCR:",
+        "prompt_with_structure": None,
+        "toc_prompt": None,
+        "default_max_tokens": 4092,
+        "two_pass": False,
+    },
+}
+
+# Active OCR config (set via CLI --ocr-model, defaults to olmocr)
+ACTIVE_OCR_CONFIG = OCR_MODELS["olmocr"]
+
+# Max tokens: env var overrides model default
+OCR_MAX_TOKENS = int(os.getenv("OCR_MAX_TOKENS", "0")) or ACTIVE_OCR_CONFIG["default_max_tokens"]
+
 # Global flag to disable OCR (set via CLI)
 DISABLE_OCR = False
 
 
-def is_olmocr_available():
-    """Check if OlmOCR is available and configured"""
+def is_ocr_available():
+    """Check if OCR via DeepInfra is available and configured"""
     if DISABLE_OCR:
         return False
-    if not USE_OLMOCR:
+    if not USE_OCR:
         return False
     if not DEEPINFRA_API_KEY:
         return False
@@ -158,21 +184,21 @@ def image_to_base64(image, format=None, quality=95):
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
-    """Convert a single PDF page image to markdown using OlmOCR (sync version)"""
+def convert_pdf_page_with_ocr(client, image, page_num, verbose=False):
+    """Convert a single PDF page image to markdown using active OCR model (sync version)"""
     try:
         base64_image = image_to_base64(image)
         mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
 
         response = client.chat.completions.create(
-            model=OLMOCR_MODEL,
+            model=ACTIVE_OCR_CONFIG["model_id"],
             messages=[
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": OCR_PROMPT
+                            "text": ACTIVE_OCR_CONFIG["prompt"]
                         },
                         {
                             "type": "image_url",
@@ -189,19 +215,19 @@ def convert_pdf_page_with_olmocr(client, image, page_num, verbose=False):
         return response.choices[0].message.content
     except Exception as e:
         if verbose:
-            print(f"Error processing page {page_num} with OlmOCR: {str(e)}")
+            print(f"Error processing page {page_num} with {ACTIVE_OCR_CONFIG['name']}: {str(e)}")
         return None
 
 
-async def convert_pdf_page_with_olmocr_async(client, base64_image, page_num, semaphore, prompt=None, verbose=False):
-    """Convert a single PDF page image to markdown using OlmOCR (async version)"""
+async def convert_pdf_page_with_ocr_async(client, base64_image, page_num, semaphore, prompt=None, verbose=False):
+    """Convert a single PDF page image to markdown using active OCR model (async version)"""
     async with semaphore:
         try:
             mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
-            ocr_prompt = prompt if prompt else OCR_PROMPT
+            ocr_prompt = prompt if prompt else ACTIVE_OCR_CONFIG["prompt"]
 
             response = await client.chat.completions.create(
-                model=OLMOCR_MODEL,
+                model=ACTIVE_OCR_CONFIG["model_id"],
                 messages=[
                     {
                         "role": "user",
@@ -250,12 +276,12 @@ def extract_toc_from_pages(client, images, verbose=False):
             mime_type = "image/png" if OCR_IMAGE_FORMAT == "PNG" else "image/jpeg"
 
             response = client.chat.completions.create(
-                model=OLMOCR_MODEL,
+                model=ACTIVE_OCR_CONFIG["model_id"],
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": TOC_EXTRACTION_PROMPT},
+                            {"type": "text", "text": ACTIVE_OCR_CONFIG["toc_prompt"]},
                             {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}
                         ]
                     }
@@ -404,12 +430,13 @@ async def process_batch_async(clients, images, batch_start, total_pages, semapho
         page_num = batch_start + i
         base64_images.append((page_num, image_to_base64(image)))
 
-    # Create prompt based on whether we have TOC structure
-    if toc_structure:
+    # Create prompt based on whether we have TOC structure and model supports it
+    prompt_with_structure = ACTIVE_OCR_CONFIG.get("prompt_with_structure")
+    if toc_structure and prompt_with_structure:
         heading_context = create_heading_context(toc_structure)
-        page_prompt = OCR_PROMPT_WITH_STRUCTURE.format(heading_context=heading_context)
+        page_prompt = prompt_with_structure.format(heading_context=heading_context)
     else:
-        page_prompt = OCR_PROMPT
+        page_prompt = ACTIVE_OCR_CONFIG["prompt"]
 
     # Create async tasks distributed across clients (round-robin)
     tasks = []
@@ -418,7 +445,7 @@ async def process_batch_async(clients, images, batch_start, total_pages, semapho
         client = clients[idx % len(clients)]
 
         tasks.append(
-            convert_pdf_page_with_olmocr_async(client, b64_img, page_num, semaphore, page_prompt, verbose)
+            convert_pdf_page_with_ocr_async(client, b64_img, page_num, semaphore, page_prompt, verbose)
         )
 
     # Run all tasks concurrently
@@ -427,13 +454,17 @@ async def process_batch_async(clients, images, batch_start, total_pages, semapho
     return results
 
 
-def convert_pdf_with_olmocr(pdf_path, verbose=False, batch_size=100):
-    """Convert a PDF file to markdown using OlmOCR with parallel API calls and structure-aware headings"""
+def convert_pdf_with_ocr(pdf_path, verbose=False, batch_size=100):
+    """Convert a PDF file to markdown using active OCR model with parallel API calls"""
     try:
+        model_name = ACTIVE_OCR_CONFIG["name"]
+        two_pass = ACTIVE_OCR_CONFIG["two_pass"]
+
         if verbose:
-            print(f"Using OlmOCR for {pdf_path}", flush=True)
+            print(f"Using {model_name} ({ACTIVE_OCR_CONFIG['model_id']}) for {pdf_path}", flush=True)
             print(f"  Settings: DPI={OCR_DPI}, Format={OCR_IMAGE_FORMAT}, MaxTokens={OCR_MAX_TOKENS}", flush=True)
             print(f"  API keys: {len(API_KEYS)}, Parallel requests: {OCR_CONCURRENCY} concurrent", flush=True)
+            print(f"  Two-pass mode: {'enabled' if two_pass else 'disabled'}", flush=True)
 
         # Get total page count without loading all pages
         total_pages = get_pdf_page_count(pdf_path)
@@ -441,45 +472,50 @@ def convert_pdf_with_olmocr(pdf_path, verbose=False, batch_size=100):
         if verbose:
             print(f"PDF has {total_pages} pages (processing in batches of {batch_size} with {OCR_CONCURRENCY} parallel API calls)", flush=True)
 
-        # ========== PASS 1: Extract Table of Contents ==========
+        # ========== PASS 1: Extract Table of Contents (if model supports it) ==========
         toc_structure = None
-        toc_pages_to_scan = min(10, total_pages)  # Scan first 10 pages for TOC
 
-        if verbose:
-            print(f"Pass 1: Extracting document structure from first {toc_pages_to_scan} pages...", flush=True)
+        if two_pass:
+            toc_pages_to_scan = min(10, total_pages)  # Scan first 10 pages for TOC
 
-        try:
-            # Load first few pages to extract TOC
-            toc_images = convert_from_path(
-                pdf_path,
-                dpi=OCR_DPI,
-                first_page=1,
-                last_page=toc_pages_to_scan
-            )
-
-            # Extract TOC using sync client
-            sync_client = get_deepinfra_client()
-            toc_text = extract_toc_from_pages(sync_client, toc_images, verbose)
-
-            if toc_text:
-                toc_structure = parse_toc_structure(toc_text)
-                if toc_structure and verbose:
-                    print(f"  Found {len(toc_structure['chapters'])} chapters in document structure", flush=True)
-                    for ch in toc_structure['chapters'][:5]:
-                        print(f"    - {ch}", flush=True)
-                    if len(toc_structure['chapters']) > 5:
-                        print(f"    ... and {len(toc_structure['chapters']) - 5} more", flush=True)
-            elif verbose:
-                print("  No table of contents found, using default heading rules", flush=True)
-
-            del toc_images
-        except Exception as e:
             if verbose:
-                print(f"  TOC extraction failed: {str(e)}, using default heading rules", flush=True)
+                print(f"Pass 1: Extracting document structure from first {toc_pages_to_scan} pages...", flush=True)
 
-        # ========== PASS 2: Convert Pages with Structure Context ==========
+            try:
+                # Load first few pages to extract TOC
+                toc_images = convert_from_path(
+                    pdf_path,
+                    dpi=OCR_DPI,
+                    first_page=1,
+                    last_page=toc_pages_to_scan
+                )
+
+                # Extract TOC using sync client
+                sync_client = get_deepinfra_client()
+                toc_text = extract_toc_from_pages(sync_client, toc_images, verbose)
+
+                if toc_text:
+                    toc_structure = parse_toc_structure(toc_text)
+                    if toc_structure and verbose:
+                        print(f"  Found {len(toc_structure['chapters'])} chapters in document structure", flush=True)
+                        for ch in toc_structure['chapters'][:5]:
+                            print(f"    - {ch}", flush=True)
+                        if len(toc_structure['chapters']) > 5:
+                            print(f"    ... and {len(toc_structure['chapters']) - 5} more", flush=True)
+                elif verbose:
+                    print("  No table of contents found, using default heading rules", flush=True)
+
+                del toc_images
+            except Exception as e:
+                if verbose:
+                    print(f"  TOC extraction failed: {str(e)}, using default heading rules", flush=True)
+
+        # ========== PASS 2: Convert Pages ==========
         if verbose:
-            print(f"Pass 2: Converting pages with {'structure-aware' if toc_structure else 'default'} heading rules...", flush=True)
+            if two_pass:
+                print(f"Pass 2: Converting pages with {'structure-aware' if toc_structure else 'default'} heading rules...", flush=True)
+            else:
+                print(f"Converting pages with {model_name}...", flush=True)
 
         # Results dictionary to maintain page order
         results_dict = {}
@@ -554,7 +590,7 @@ def convert_pdf_with_olmocr(pdf_path, verbose=False, batch_size=100):
         return final_output
     except Exception as e:
         if verbose:
-            print(f"OlmOCR failed for {pdf_path}: {str(e)}", flush=True)
+            print(f"{ACTIVE_OCR_CONFIG['name']} failed for {pdf_path}: {str(e)}", flush=True)
         return None
 
 
@@ -562,9 +598,9 @@ def convert_file_to_markdown_string(input_file_path, verbose=False):
     """Convert a single file to markdown and return as string"""
     ext = os.path.splitext(input_file_path)[1].lower()
 
-    # Use OlmOCR for PDFs if available
-    if ext == ".pdf" and is_olmocr_available():
-        result = convert_pdf_with_olmocr(input_file_path, verbose)
+    # Use OCR for PDFs if available
+    if ext == ".pdf" and is_ocr_available():
+        result = convert_pdf_with_ocr(input_file_path, verbose)
         if result is not None:
             return result
         if verbose:
@@ -592,11 +628,14 @@ def parse_arguments():
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose output")
     parser.add_argument("--no-ocr", action="store_true",
-                        help="Disable OlmOCR and use markitdown for all files including PDFs")
+                        help="Disable OCR and use markitdown for all files including PDFs")
+    parser.add_argument("--ocr-model", dest="ocr_model", default="olmocr",
+                        choices=list(OCR_MODELS.keys()),
+                        help="OCR model to use for PDFs (default: olmocr)")
     return parser.parse_args()
 
 def convert_file_to_markdown(input_file_path, output_file_path, verbose=False):
-    """Convert a single file to markdown using OlmOCR for PDFs or MarkItDown for other formats"""
+    """Convert a single file to markdown using OCR for PDFs or MarkItDown for other formats"""
     try:
         content = convert_file_to_markdown_string(input_file_path, verbose)
 
@@ -868,15 +907,19 @@ if __name__ == "__main__":
     if args.no_ocr:
         DISABLE_OCR = True
 
+    # Set active OCR model from CLI argument
+    ACTIVE_OCR_CONFIG = OCR_MODELS[args.ocr_model]
+    OCR_MAX_TOKENS = int(os.getenv("OCR_MAX_TOKENS", "0")) or ACTIVE_OCR_CONFIG["default_max_tokens"]
+
     # Print OCR status in verbose mode
     if args.verbose:
-        if is_olmocr_available():
-            print("OlmOCR is available and will be used for PDFs")
+        if is_ocr_available():
+            print(f"{ACTIVE_OCR_CONFIG['name']} ({ACTIVE_OCR_CONFIG['model_id']}) will be used for PDFs")
         else:
             reasons = []
             if DISABLE_OCR:
                 reasons.append("disabled via --no-ocr")
-            elif not USE_OLMOCR:
+            elif not USE_OCR:
                 reasons.append("USE_OLMOCR=false in .env")
             elif not DEEPINFRA_API_KEY:
                 reasons.append("DEEPINFRA_API_KEY not set")
@@ -884,6 +927,6 @@ if __name__ == "__main__":
                 reasons.append("openai package not installed")
             elif not PDF2IMAGE_AVAILABLE:
                 reasons.append("pdf2image/Pillow not installed")
-            print(f"OlmOCR not available ({', '.join(reasons)}), using markitdown for PDFs")
+            print(f"OCR not available ({', '.join(reasons)}), using markitdown for PDFs")
 
     process_all_files(args.input_dir, args.output_dir, args.verbose)

@@ -112,7 +112,8 @@ Available options:
 | `-i` | `--input` | Specify custom input directory (default: `input`) |
 | `-o` | `--output` | Specify custom output directory (default: `output`) |
 | `-v` | `--verbose` | Enable verbose output for detailed processing information |
-|      | `--no-ocr` | Disable OlmOCR and use markitdown for all files including PDFs |
+|      | `--no-ocr` | Disable OCR and use markitdown for all files including PDFs |
+|      | `--ocr-model` | OCR model to use for PDFs: `olmocr` (default) or `paddleocr` |
 
 Examples:
 
@@ -126,8 +127,11 @@ python3 MarkItDown.py -i /Users/username/Documents -o /Users/username/Markdown
 # Enable verbose mode
 python3 MarkItDown.py -v
 
-# Disable OlmOCR (use markitdown for all files)
+# Disable OCR (use markitdown for all files)
 python3 MarkItDown.py --no-ocr
+
+# Use PaddleOCR-VL instead of OlmOCR for PDFs
+python3 MarkItDown.py --ocr-model paddleocr
 ```
 
 ### Supported File Types
